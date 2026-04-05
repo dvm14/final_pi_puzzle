@@ -1,0 +1,9 @@
+mediapipe==0.10.14
+picamzero
+tflite-runtime      # use tensorflow on non-Pi
+numpy
+Pillow
+lcd_i2c
+RPi.GPIO            # Pi only
+smbus2              # I2C for LCD
+opencv-python       # used for simulation fallback display + image ops

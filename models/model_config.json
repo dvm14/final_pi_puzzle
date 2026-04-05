@@ -1,0 +1,17 @@
+{
+  "img_size": 128,
+  "num_classes": 7,
+  "class_names": [
+    "Angry",
+    "Disgust",
+    "Fear",
+    "Happy",
+    "Neutral",
+    "Sad",
+    "Surprise"
+  ],
+  "in_scale": 1.0,
+  "in_zero": 0,
+  "out_scale": 0.00390625,
+  "out_zero": 0
+}
