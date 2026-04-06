@@ -10,6 +10,12 @@ Camera fallback:
   If picamzero is not importable (dev machine), the camera thread generates
   a blank (black) RGB frame so the rest of the code path still runs.
 
+Button simulation:
+  If RPi.GPIO is not importable, the button never registers a press.
+  Prompt states (READY_PROMPT, SHOW_SCORE_PROMPT, PLAY_AGAIN_PROMPT) will
+  auto-advance after a short timeout so the game can still be tested on a
+  dev machine.
+
 Run:
   python game.py
 """
@@ -27,13 +33,16 @@ except ImportError:
     warnings.warn("[game] picamzero not available — camera frames will be blank (simulation).")
 
 from config import CONFIG
-from sensor import UltrasonicSensor
+from sensor import UltrasonicSensor, Button
 from detector import EmotionDetector, GestureDetector
 from display import LCDDisplay
 from game_logic import (
     GameState, RoundTarget, DetectionResult, RoundRecord,
     random_target, compute_score, game_passed,
 )
+
+# How long to wait before auto-advancing a button-prompt state in simulation
+_SIM_PROMPT_TIMEOUT = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +149,7 @@ class EmotionPuzzleGame:
         self._right_sensor = UltrasonicSensor(
             self._cfg["right_trig"], self._cfg["right_echo"], self._cfg
         )
+        self._button            = Button(self._cfg["button_pin"])
         self._emotion_detector  = EmotionDetector()
         self._gesture_detector  = GestureDetector()
         self._display           = LCDDisplay(self._cfg)
@@ -149,11 +159,13 @@ class EmotionPuzzleGame:
         self._sensor_thread = SensorThread(self._left_sensor, self._right_sensor)
 
         # Game state
-        self._state        : GameState       = GameState.INTRO
-        self._round_num    : int             = 0
-        self._records      : list            = []
+        self._state         : GameState        = GameState.INTRO
+        self._round_num     : int              = 0
+        self._records       : list             = []
         self._current_target: RoundTarget | None = None
-        self._state_start  : float          = 0.0   # time.monotonic() at state entry
+        self._state_start   : float            = 0.0
+        self._last_detection: DetectionResult | None = None
+        self._last_passed   : bool             = False
 
     # ------------------------------------------------------------------
     # State machine helpers
@@ -169,25 +181,43 @@ class EmotionPuzzleGame:
     def _remaining(self, duration: float) -> float:
         return max(0.0, duration - self._elapsed())
 
+    def _button_pressed_or_timeout(self, timeout=_SIM_PROMPT_TIMEOUT) -> bool:
+        """
+        Return True if the physical button is pressed, OR (in simulation mode)
+        if the prompt has been showing for longer than `timeout` seconds.
+        """
+        if self._button.is_pressed():
+            return True
+        if not _PICAM_AVAILABLE and self._elapsed() >= timeout:
+            return True
+        return False
+
     # ------------------------------------------------------------------
-    # State handlers — called every loop tick
+    # State handlers
     # ------------------------------------------------------------------
 
     def _handle_intro(self):
-        self._display.draw_intro()
-        # Wait for any key (console) or a fixed delay on Pi without keyboard
+        """Show title briefly, then go straight to the ready prompt."""
+        if self._elapsed() < 0.01:
+            self._display.draw_intro()
         time.sleep(0.1)
-        # Transition automatically after showing the screen for a moment,
-        # or wait for keyboard input on dev machines.
-        if self._elapsed() >= 3.0:
+        if self._elapsed() >= 2.0:
+            self._enter(GameState.READY_PROMPT)
+
+    def _handle_ready_prompt(self):
+        """'Are you ready to start?' — wait for button press."""
+        if self._elapsed() < 0.01:
             self._round_num = 0
             self._records   = []
+            self._display.draw_ready_prompt()
+        time.sleep(0.05)
+        if self._button_pressed_or_timeout():
+            time.sleep(0.3)  # debounce
             self._enter(GameState.ROUND_START)
 
     def _handle_round_start(self):
         if self._elapsed() < 0.01:
-            # First tick: generate target
-            self._round_num    += 1
+            self._round_num     += 1
             self._current_target = random_target()
 
         self._display.draw_round_start(self._round_num, self._current_target)
@@ -199,7 +229,7 @@ class EmotionPuzzleGame:
     def _handle_countdown(self):
         remaining = self._remaining(self._cfg["prepare_seconds"])
         self._display.draw_countdown(self._current_target, remaining, self._round_num)
-        time.sleep(1.0 / 15)  # ~15 FPS refresh
+        time.sleep(1.0 / 15)
 
         if remaining <= 0:
             self._enter(GameState.HOLD)
@@ -213,7 +243,6 @@ class EmotionPuzzleGame:
             self._enter(GameState.DETECT)
 
     def _handle_detect(self):
-        # Grab latest frame and sensor readings at this exact moment
         frame = self._cam_thread.get_frame()
         left_zone, right_zone = self._sensor_thread.get_zones()
 
@@ -240,7 +269,6 @@ class EmotionPuzzleGame:
             passed    = passed,
         ))
 
-        # Stash for RESULT state
         self._last_detection = detection
         self._last_passed    = passed
 
@@ -251,25 +279,41 @@ class EmotionPuzzleGame:
             self._display.draw_result(
                 self._last_passed, self._current_target, self._last_detection
             )
-
         time.sleep(0.05)
 
         if self._elapsed() >= self._cfg["result_display_seconds"]:
             if self._round_num < self._cfg["total_rounds"]:
                 self._enter(GameState.ROUND_START)
             else:
-                self._enter(GameState.FINAL_SCORE)
+                self._enter(GameState.SHOW_SCORE_PROMPT)
+
+    def _handle_show_score_prompt(self):
+        """'Game over! Press button to show score.' — wait for button press."""
+        if self._elapsed() < 0.01:
+            self._display.draw_show_score_prompt()
+        time.sleep(0.05)
+        if self._button_pressed_or_timeout():
+            time.sleep(0.3)  # debounce
+            self._enter(GameState.FINAL_SCORE)
 
     def _handle_final_score(self):
+        """Show the score, then move to the play-again prompt."""
         if self._elapsed() < 0.01:
             score         = compute_score(self._records)
             round_results = [r.passed for r in self._records]
             self._display.draw_final_score(score, round_results)
-
         time.sleep(0.1)
 
-        # Restart after a pause
-        if self._elapsed() >= 5.0:
+        if self._elapsed() >= self._cfg["result_display_seconds"] + 1.0:
+            self._enter(GameState.PLAY_AGAIN_PROMPT)
+
+    def _handle_play_again_prompt(self):
+        """'Play again? Press button.' — wait for button press, then restart."""
+        if self._elapsed() < 0.01:
+            self._display.draw_play_again_prompt()
+        time.sleep(0.05)
+        if self._button_pressed_or_timeout():
+            time.sleep(0.3)  # debounce
             self._enter(GameState.INTRO)
 
     # ------------------------------------------------------------------
@@ -280,20 +324,22 @@ class EmotionPuzzleGame:
         self._cam_thread.start()
         self._sensor_thread.start()
 
-        # Wait for camera to produce the first frame
         if not self._cam_thread.wait_for_first_frame(timeout=5.0):
             warnings.warn("[game] Camera did not produce a frame within 5 s — continuing anyway.")
 
         self._enter(GameState.INTRO)
 
         _handlers = {
-            GameState.INTRO       : self._handle_intro,
-            GameState.ROUND_START : self._handle_round_start,
-            GameState.COUNTDOWN   : self._handle_countdown,
-            GameState.HOLD        : self._handle_hold,
-            GameState.DETECT      : self._handle_detect,
-            GameState.RESULT      : self._handle_result,
-            GameState.FINAL_SCORE : self._handle_final_score,
+            GameState.INTRO             : self._handle_intro,
+            GameState.READY_PROMPT      : self._handle_ready_prompt,
+            GameState.ROUND_START       : self._handle_round_start,
+            GameState.COUNTDOWN         : self._handle_countdown,
+            GameState.HOLD              : self._handle_hold,
+            GameState.DETECT            : self._handle_detect,
+            GameState.RESULT            : self._handle_result,
+            GameState.SHOW_SCORE_PROMPT : self._handle_show_score_prompt,
+            GameState.FINAL_SCORE       : self._handle_final_score,
+            GameState.PLAY_AGAIN_PROMPT : self._handle_play_again_prompt,
         }
 
         while True:
@@ -305,6 +351,7 @@ class EmotionPuzzleGame:
         self._sensor_thread.stop()
         self._left_sensor.cleanup()
         self._right_sensor.cleanup()
+        self._button.cleanup()
         self._display.close()
 
 

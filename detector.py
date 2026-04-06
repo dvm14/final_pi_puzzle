@@ -85,16 +85,21 @@ class EmotionDetector:
         """
         Convert an RGB numpy frame to a quantized uint8 tensor.
 
+        The model config has in_scale=1.0, in_zero=0, meaning the model
+        expects raw uint8 pixel values (0–255) directly — no float
+        normalisation is applied before quantisation.
+
         Steps:
           1. Resize to (img_size, img_size)
-          2. Normalise: img = (img / 127.5) - 1.0
-          3. Quantize to uint8: q = round(img / in_scale + in_zero)
-          4. Add batch dimension → shape (1, img_size, img_size, 3)
+          2. Quantize: q = clamp(round(pixel / in_scale + in_zero), 0, 255)
+             → with scale=1.0, zero=0 this is just the raw uint8 values
+          3. Add batch dimension → shape (1, img_size, img_size, 3)
         """
         img = cv2.resize(frame_rgb, (self._img_size, self._img_size))
-        img = img.astype(np.float32)
-        img = (img / 127.5) - 1.0
-        img_q = np.round(img / self._in_scale + self._in_zero).astype(np.uint8)
+        img_q = np.clip(
+            np.round(img.astype(np.float32) / self._in_scale + self._in_zero),
+            0, 255
+        ).astype(np.uint8)
         return img_q[np.newaxis, ...]  # (1, H, W, 3)
 
     def _dequantize_output(self, raw):

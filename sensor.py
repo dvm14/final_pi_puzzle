@@ -130,3 +130,43 @@ class UltrasonicSensor:
     def read_zone(self):
         """Return the distance zone string ('close', 'middle', 'far') or None."""
         return cm_to_zone(self.read_cm(), self._config)
+
+
+# ---------------------------------------------------------------------------
+# Button
+# ---------------------------------------------------------------------------
+
+class Button:
+    """
+    A momentary push button wired to a GPIO pin with an internal pull-up.
+    The button is considered pressed when the pin reads LOW.
+
+    In simulation mode (no RPi.GPIO), is_pressed() always returns False.
+
+    Parameters
+    ----------
+    pin : int  BCM pin number
+    """
+
+    def __init__(self, pin):
+        self._pin       = pin
+        self._simulated = not _GPIO_AVAILABLE
+
+        if not self._simulated:
+            # Reuse the same GPIO.setmode guard used by UltrasonicSensor
+            if not UltrasonicSensor._gpio_initialised:
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setwarnings(False)
+                UltrasonicSensor._gpio_initialised = True
+            GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    def is_pressed(self):
+        """Return True if the button is currently held down."""
+        if self._simulated:
+            return False
+        return GPIO.input(self._pin) == GPIO.LOW
+
+    def cleanup(self):
+        """Release the GPIO pin."""
+        if not self._simulated:
+            GPIO.cleanup([self._pin])

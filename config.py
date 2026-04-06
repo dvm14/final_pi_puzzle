@@ -1,7 +1,7 @@
 CONFIG = {
     # Paths
     "emotion_model_path"    : "models/emotionnet_int8.tflite",
-    "model_config_path"     : "models/model_config.json",
+    "model_config_path"     : "models/emotion_model_config.json",
 
     # Camera (picamzero)
     "camera_width"          : 640,
@@ -13,10 +13,11 @@ CONFIG = {
     "lcd_rows"              : 2,
 
     # GPIO pins (BCM)
-    "left_trig"             : 23,
-    "left_echo"             : 24,
-    "right_trig"            : 27,
-    "right_echo"            : 22,
+    "left_trig"             : 16,
+    "left_echo"             : 20,
+    "right_trig"            : 23,
+    "right_echo"            : 24,
+    "button_pin"            : 21,
 
     # Distance thresholds (cm)
     "dist_close_max"        : 20,

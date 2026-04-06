@@ -17,13 +17,16 @@ from config import CONFIG, EMOTION_OPTIONS, GESTURE_OPTIONS, DISTANCE_OPTIONS
 # ---------------------------------------------------------------------------
 
 class GameState(Enum):
-    INTRO        = auto()
-    ROUND_START  = auto()
-    COUNTDOWN    = auto()
-    HOLD         = auto()
-    DETECT       = auto()
-    RESULT       = auto()
-    FINAL_SCORE  = auto()
+    INTRO             = auto()
+    READY_PROMPT      = auto()   # "Are you ready to start?" → button
+    ROUND_START       = auto()
+    COUNTDOWN         = auto()
+    HOLD              = auto()
+    DETECT            = auto()
+    RESULT            = auto()
+    SHOW_SCORE_PROMPT = auto()   # "Show score? Press button" → button
+    FINAL_SCORE       = auto()
+    PLAY_AGAIN_PROMPT = auto()   # "Play again? Press button" → button
 
 
 # ---------------------------------------------------------------------------

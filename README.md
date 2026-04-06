@@ -34,11 +34,21 @@ VCC        → 5V (Pin 2 or 4)
 GND        → GND
 TRIG       → GPIO23 (Pin 16)  ← left sensor
 ECHO       → GPIO24 (Pin 18)  ← left sensor  [use 1kΩ + 2kΩ voltage divider]
-TRIG       → GPIO27 (Pin 13)  ← right sensor
-ECHO       → GPIO22 (Pin 15)  ← right sensor [use 1kΩ + 2kΩ voltage divider]
+TRIG       → GPIO16 (Pin 36)  ← right sensor
+ECHO       → GPIO20 (Pin 38)  ← right sensor [use 1kΩ + 2kΩ voltage divider]
 ```
 
 > ⚠️ The HC-SR04 ECHO pin outputs 5 V. Use a voltage divider to bring it to 3.3 V before connecting to the Pi GPIO.
+
+### Button wiring
+
+```
+Button Pin → Pi Pin
+One leg    → GPIO21 (Pin 40)
+Other leg  → GND
+```
+
+The button uses the Pi's internal pull-up resistor — no external resistor needed. Press = LOW signal.
 
 ### 16×2 I2C LCD wiring
 

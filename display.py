@@ -199,6 +199,33 @@ class LCDDisplay:
         )
         self._write(line0, marks)
 
+    def draw_ready_prompt(self):
+        """
+        +----------------+
+        |Are you ready?  |
+        |Press button... |
+        +----------------+
+        """
+        self._write("Are you ready?", "Press button...")
+
+    def draw_show_score_prompt(self):
+        """
+        +----------------+
+        |Game over!      |
+        |Btn: show score |
+        +----------------+
+        """
+        self._write("Game over!", "Btn: show score")
+
+    def draw_play_again_prompt(self):
+        """
+        +----------------+
+        |Play again?     |
+        |Press button... |
+        +----------------+
+        """
+        self._write("Play again?", "Press button...")
+
     def draw_message(self, line0, line1=""):
         """Generic two-line message (used for errors or transient states)."""
         self._write(line0, line1)
