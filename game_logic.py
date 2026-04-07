@@ -1,7 +1,8 @@
 """
 game_logic.py — Data classes, state machine enum, and scoring helpers.
 
-No hardware imports here — pure Python logic only.
+This file manages the pure game rules and data structures.
+No hardware imports are used here to ensure the logic remains independent.
 """
 
 import random
@@ -9,24 +10,31 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional, List
 
-from config import CONFIG, EMOTION_OPTIONS, GESTURE_OPTIONS, DISTANCE_OPTIONS
-
+# Import the updated color options instead of the generic DISTANCE_OPTIONS
+from config import (
+    CONFIG, 
+    EMOTION_OPTIONS, 
+    GESTURE_OPTIONS, 
+    LEFT_COLOR_OPTIONS, 
+    RIGHT_COLOR_OPTIONS
+)
 
 # ---------------------------------------------------------------------------
 # Game state enum
 # ---------------------------------------------------------------------------
 
 class GameState(Enum):
+    """Enumeration of all possible states in the game's state machine."""
     INTRO             = auto()
-    READY_PROMPT      = auto()   # "Are you ready to start?" → button
+    READY_PROMPT      = auto()   # "Are you ready to start?" → waits for button press
     ROUND_START       = auto()
     COUNTDOWN         = auto()
     HOLD              = auto()
     DETECT            = auto()
     RESULT            = auto()
-    SHOW_SCORE_PROMPT = auto()   # "Show score? Press button" → button
+    SHOW_SCORE_PROMPT = auto()   # "Show score? Press button" → waits for button press
     FINAL_SCORE       = auto()
-    PLAY_AGAIN_PROMPT = auto()   # "Play again? Press button" → button
+    PLAY_AGAIN_PROMPT = auto()   # "Play again? Press button" → waits for button press
 
 
 # ---------------------------------------------------------------------------
@@ -35,17 +43,17 @@ class GameState(Enum):
 
 @dataclass
 class RoundTarget:
-    """The randomly generated target combination for one round."""
-    emotion        : str   # one of EMOTION_OPTIONS
-    left_gesture   : str   # one of GESTURE_OPTIONS
-    right_gesture  : str   # one of GESTURE_OPTIONS
-    left_distance  : str   # one of DISTANCE_OPTIONS
-    right_distance : str   # one of DISTANCE_OPTIONS
+    """The randomly generated target combination that the player must match for one round."""
+    emotion        : str   # One of EMOTION_OPTIONS
+    left_gesture   : str   # One of GESTURE_OPTIONS
+    right_gesture  : str   # One of GESTURE_OPTIONS
+    left_distance  : str   # One of LEFT_COLOR_OPTIONS (Pink or Red)
+    right_distance : str   # One of RIGHT_COLOR_OPTIONS (Blue or Green)
 
 
 @dataclass
 class DetectionResult:
-    """What was actually detected at snapshot time."""
+    """What the camera and sensors actually detected at the snapshot moment."""
     emotion        : Optional[str] = None
     left_gesture   : Optional[str] = None
     right_gesture  : Optional[str] = None
@@ -53,7 +61,10 @@ class DetectionResult:
     right_distance : Optional[str] = None
 
     def matches(self, target: RoundTarget) -> bool:
-        """Return True only if every field matches the target."""
+        """
+        Compare detected results against the target.
+        Returns True ONLY if every single field perfectly matches the target.
+        """
         return (
             self.emotion        == target.emotion        and
             self.left_gesture   == target.left_gesture   and
@@ -65,7 +76,7 @@ class DetectionResult:
 
 @dataclass
 class RoundRecord:
-    """Full record of one completed round (used for final score screen)."""
+    """A complete record of one finished round, used later for the final score breakdown."""
     round_num : int
     target    : RoundTarget
     detection : DetectionResult
@@ -73,25 +84,28 @@ class RoundRecord:
 
 
 # ---------------------------------------------------------------------------
-# Factory / helpers
+# Factory / Helper functions
 # ---------------------------------------------------------------------------
 
 def random_target() -> RoundTarget:
-    """Generate a random target by picking independently from each option list."""
+    """
+    Generate a random target by picking independently from each option list.
+    Updated to explicitly extract specific color zones for left and right hands.
+    """
     return RoundTarget(
         emotion        = random.choice(EMOTION_OPTIONS),
         left_gesture   = random.choice(GESTURE_OPTIONS),
         right_gesture  = random.choice(GESTURE_OPTIONS),
-        left_distance  = random.choice(DISTANCE_OPTIONS),
-        right_distance = random.choice(DISTANCE_OPTIONS),
+        left_distance  = random.choice(LEFT_COLOR_OPTIONS),   # Extracts Pink or Red
+        right_distance = random.choice(RIGHT_COLOR_OPTIONS),  # Extracts Blue or Green
     )
 
 
 def compute_score(records: List[RoundRecord]) -> int:
-    """Return the number of rounds that were passed."""
+    """Calculate and return the total number of rounds that the player passed."""
     return sum(1 for r in records if r.passed)
 
 
 def game_passed(score: int) -> bool:
-    """Return True if the player passed the game overall."""
+    """Return True if the player's total score meets or exceeds the pass threshold."""
     return score >= CONFIG["pass_threshold"]
