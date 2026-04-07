@@ -7,3 +7,4 @@ lcd_i2c
 RPi.GPIO            # Pi only
 smbus2              # I2C for LCD
 opencv-python       # used for simulation fallback display + image ops
+pyttsx3             # TTS engine

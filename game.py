@@ -2,9 +2,10 @@
 game.py — Main game loop for the Emotion Puzzle Game.
 
 Threading model:
-  Main thread   : State machine, display rendering, and core game logic.
+  Main thread   : State machine, display rendering, core game logic, and TTS triggering.
   Camera thread : Continuously captures frames from picamzero, stores latest RGB frame.
   Sensor thread : Polls both HC-SR04 sensors every 200 ms.
+  Voice thread  : (Managed by VoiceAnnouncer) Reads out text prompts asynchronously.
 
 Camera fallback:
   If picamzero is not importable (e.g., running on a dev machine), the camera thread 
@@ -14,14 +15,12 @@ Button simulation:
   If RPi.GPIO is not importable, the button never registers a physical press.
   Prompt states (READY_PROMPT, SHOW_SCORE_PROMPT, PLAY_AGAIN_PROMPT) will
   auto-advance after a short timeout so the game can still be tested on a laptop.
-
-How to run:
-  python game.py
 """
 
 import threading
 import time
 import warnings
+import random  # <-- Added for randomizing the TTS templates
 import numpy as np
 
 try:
@@ -35,6 +34,7 @@ from config import CONFIG
 from sensor import UltrasonicSensor, Button
 from detector import EmotionDetector, GestureDetector
 from display import LCDDisplay
+from voice import VoiceAnnouncer
 from game_logic import (
     GameState, RoundTarget, DetectionResult, RoundRecord,
     random_target, compute_score, game_passed,
@@ -146,7 +146,6 @@ class EmotionPuzzleGame:
         self._cfg = CONFIG
 
         # Hardware / detection initialization
-        # Note: Added hand_side parameters to map distances to specific colors
         self._left_sensor  = UltrasonicSensor(
             self._cfg["left_trig"], self._cfg["left_echo"], self._cfg, hand_side='left'
         )
@@ -157,6 +156,7 @@ class EmotionPuzzleGame:
         self._emotion_detector  = EmotionDetector()
         self._gesture_detector  = GestureDetector()
         self._display           = LCDDisplay(self._cfg)
+        self._voice             = VoiceAnnouncer()  # Initialize the TTS engine
 
         # Initialize background threads
         self._cam_thread    = CameraThread(self._cfg)
@@ -224,10 +224,34 @@ class EmotionPuzzleGame:
             self._enter(GameState.ROUND_START)
 
     def _handle_round_start(self):
-        """Initialize a new round, generate a random target, and show it for 2 seconds."""
+        """Initialize a new round, generate a random target, and announce it via TTS."""
         if self._elapsed() < 0.01:
             self._round_num     += 1
             self._current_target = random_target()
+            
+            # --- Dynamic TTS Announcer Logic ---
+            t = self._current_target
+            
+            # Replace underscores with spaces so the TTS reads gestures naturally
+            l_gest = t.left_gesture.replace("_", " ")
+            r_gest = t.right_gesture.replace("_", " ")
+            
+            # Multiple template designs to avoid repetitive robotic voice
+            templates = [
+                # Short and direct
+                f"Round {self._round_num}. Face {t.emotion}. Left hand {l_gest} at {t.left_distance}. Right hand {r_gest} at {t.right_distance}.",
+                
+                # Conversational and natural
+                f"Get ready for round {self._round_num}. Show me a {t.emotion} face. Left hand doing {l_gest} in the {t.left_distance} zone, right hand doing {r_gest} in the {t.right_distance} zone.",
+                
+                # Challenge mode style
+                f"Level {self._round_num}. Emotion is {t.emotion}. Left: {l_gest} on {t.left_distance}. Right: {r_gest} on {t.right_distance}."
+            ]
+            
+            # Randomly select a template and send it to the background voice thread
+            prompt = random.choice(templates)
+            self._voice.speak(prompt)
+            # -----------------------------------
 
         self._display.draw_round_start(self._round_num, self._current_target)
         time.sleep(0.05)
@@ -301,7 +325,7 @@ class EmotionPuzzleGame:
             )
         time.sleep(0.05)
 
-        # Show result for 2 seconds before moving to the next round or the end screen
+        # Show result for a few seconds before moving to the next round or the end screen
         if self._elapsed() >= self._cfg["result_display_seconds"]:
             if self._round_num < self._cfg["total_rounds"]:
                 self._enter(GameState.ROUND_START)
@@ -379,6 +403,7 @@ class EmotionPuzzleGame:
         self._right_sensor.cleanup()
         self._button.cleanup()
         self._display.close()
+        self._voice.cleanup()  # Safely shutdown the TTS thread
 
 
 # ---------------------------------------------------------------------------

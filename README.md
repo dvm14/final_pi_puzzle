@@ -6,7 +6,7 @@ Say goodbye to traditional buttons, and use your body's proprioception to unlock
 
 ## 🎯 How to play
 
-The game runs for **5 rounds**. Each round displays a target combination on the LCD screen:
+The game runs for **5 rounds**. Each round displays a target combination on the LCD screen, accompanied by an **AI Voice Announcement**:
 
 * 📸 **Face** — Happy, Surprise, or Disgust
 * 🤚 **Left hand gesture** — Thumbs Up, Peace, or Thumbs Down
@@ -74,6 +74,7 @@ final_pi_puzzle/
 ├── 👁️ detector.py      # EmotionDetector & GestureDetector logic
 ├── 📡 sensor.py        # UltrasonicSensor class mapped to color zones
 ├── 📺 display.py       # LCDDisplay class (16×2 I2C)
+├── 🗣️ voice.py         # Background threaded Text-to-Speech announcer
 ├── 🧠 game_logic.py    # RoundTarget, DetectionResult, scoring, state enum
 ├── ⚙️ config.py        # All configuration constants & UI color hex codes
 ├── 📁 models/
@@ -88,14 +89,17 @@ final_pi_puzzle/
 
 ### 1. Install dependencies
 
-On the Raspberry Pi:
+**On the Raspberry Pi (Linux):**
+The AI Voice Announcer (`pyttsx3`) requires the `espeak` engine to be installed on the system level first.
 ```bash
+sudo apt-get update
+sudo apt-get install espeak
 pip install -r requirements.txt
 ```
 
-On a dev machine (for simulation/testing):
+**On a Dev Machine (Windows/Mac for simulation):**
 ```bash
-pip install tflite-runtime numpy opencv-python mediapipe
+pip install tflite-runtime numpy opencv-python mediapipe pyttsx3
 # lcd_i2c, RPi.GPIO, picamzero are Pi-only — skip them for local testing
 ```
 
@@ -128,8 +132,8 @@ The game detects missing hardware at startup and falls back gracefully so you ca
 ## ⚙️ Configuration (`config.py`)
 
 All tunable values and game aesthetics live in `config.py`. Key settings include:
-* **Zone Thresholds:** Adjust the physical cm distance for near/far zones directly in `sensor.py`.
-* **Game Flow:** Tweak `prepare_seconds`, `hold_seconds`, and `pass_threshold`.
+* **Game Flow:** Tweak `prepare_seconds`, `hold_seconds`, and `pass_threshold`. Note that `round_start_seconds` is set to 5s to allow the Text-to-Speech engine enough time to read the instructions.
+* **Zone Thresholds:** Adjust the physical cm distance for near/far zones directly in `sensor.py` (Default: Near=15-25cm, Far=35-45cm).
 * **UI Theme:** `UI_THEME_HEX` contains the low-saturation, retro-style hex codes corresponding to the physical zones (Dusty Pink, Retro Red, Slate Blue, Sage Green) for future dashboard expansions.
 
 ---
