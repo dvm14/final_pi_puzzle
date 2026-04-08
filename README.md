@@ -97,6 +97,15 @@ i2cdetect -y 1      # Confirm LCD shows up at address 0x27 (= 39)
 ```bash
 pip install picamzero gpiozero lcd_i2c piper-tts sounddevice numpy opencv-python tflite-runtime
 ```
+#### Models
+Download voice and emotion models before running:
+```bash
+wget -O models/en_US-lessac-medium.onnx \
+  'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx?download=true'
+wget -O models/en_US-lessac-medium.onnx.json \
+  'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json?download=true'
+# Copy your emotionnet_int8.tflite into models/
+```
 
 ### 3. Test each component
 Run these from the `final_pi_puzzle/` directory before starting the full game:
