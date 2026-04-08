@@ -1,420 +1,271 @@
 """
-game.py — Main game loop for the Emotion Puzzle Game.
+game.py — Pi Puzzle Game (simple sequential loop, no threading).
 
-Threading model:
-  Main thread   : State machine, display rendering, core game logic, and TTS triggering.
-  Camera thread : Continuously captures frames from picamzero, stores latest RGB frame.
-  Sensor thread : Polls both HC-SR04 sensors every 200 ms.
-  Voice thread  : (Managed by VoiceAnnouncer) Reads out text prompts asynchronously.
-
-Camera fallback:
-  If picamzero is not importable (e.g., running on a dev machine), the camera thread 
-  generates a blank (black) RGB frame so the rest of the code path still runs without crashing.
-
-Button simulation:
-  If RPi.GPIO is not importable, the button never registers a physical press.
-  Prompt states (READY_PROMPT, SHOW_SCORE_PROMPT, PLAY_AGAIN_PROMPT) will
-  auto-advance after a short timeout so the game can still be tested on a laptop.
+Run:  python game.py   (from the v2/ directory)
 """
 
-import threading
 import time
-import warnings
-import random  # <-- Added for randomizing the TTS templates
+import json
+import random
+from types import SimpleNamespace
+
 import numpy as np
+import cv2
+import sounddevice as sd
+from picamzero import Camera
+from gpiozero import DistanceSensor, Button
+from piper import PiperVoice
 
 try:
-    from picamzero import Camera as PiCamera
-    _PICAM_AVAILABLE = True
+    import tflite_runtime.interpreter as tflite
 except ImportError:
-    _PICAM_AVAILABLE = False
-    warnings.warn("[game] picamzero not available — camera frames will be blank (simulation).")
+    import tensorflow.lite as tflite  # type: ignore
 
-from config import CONFIG
-from sensor import UltrasonicSensor, Button
-from detector import EmotionDetector, GestureDetector
+from config import CONFIG, EMOTION_OPTIONS, GESTURE_OPTIONS, LEFT_COLOR_OPTIONS, RIGHT_COLOR_OPTIONS
 from display import LCDDisplay
-from voice import VoiceAnnouncer
-from game_logic import (
-    GameState, RoundTarget, DetectionResult, RoundRecord,
-    random_target, compute_score, game_passed,
+
+TARGET_AUDIO_RATE = 48000  # USB2.0 speaker sample rate
+
+GESTURE_SPOKEN = {
+    "thumbs_up"   : "thumbs up",
+    "peace"       : "peace sign",
+    "thumbs_down" : "thumbs down",
+}
+
+# ---------------------------------------------------------------------------
+# Hardware init
+# ---------------------------------------------------------------------------
+
+print("Initialising hardware...")
+
+display = LCDDisplay(CONFIG)
+display.draw_message("Starting up...", "Please wait")
+
+camera       = Camera()
+button       = Button(CONFIG["button_pin"], pull_up=True)
+left_sensor  = DistanceSensor(trigger=CONFIG["left_trig"],  echo=CONFIG["left_echo"],  max_distance=4.0)
+right_sensor = DistanceSensor(trigger=CONFIG["right_trig"], echo=CONFIG["right_echo"], max_distance=4.0)
+
+# ---------------------------------------------------------------------------
+# Voice (Piper TTS)
+# ---------------------------------------------------------------------------
+
+print("Loading voice model...")
+display.draw_message("Loading voice...", "Please wait")
+piper = PiperVoice.load(
+    model_path=CONFIG["voice_model_path"],
+    config_path=CONFIG["voice_config_path"],
 )
 
-# How long to wait before auto-advancing a button-prompt state in simulation mode
-_SIM_PROMPT_TIMEOUT = 3.0
-
-
-# ---------------------------------------------------------------------------
-# Camera thread
-# ---------------------------------------------------------------------------
-
-class CameraThread(threading.Thread):
-    """
-    Continuously captures RGB frames from picamzero (or generates blank frames
-    in simulation mode). Stores the latest frame safely using a Threading Lock.
-    """
-
-    def __init__(self, config=CONFIG):
-        super().__init__(daemon=True)
-        self._lock   = threading.Lock()
-        self._frame  = None
-        self._ready  = threading.Event()
-        self._stop   = threading.Event()
-        self._w      = config["camera_width"]
-        self._h      = config["camera_height"]
-        self._cam    = None
-
-    def run(self):
-        if _PICAM_AVAILABLE:
-            self._cam = PiCamera()
-        try:
-            while not self._stop.is_set():
-                if _PICAM_AVAILABLE:
-                    frame = self._cam.capture_array()  # Captures an RGB numpy array
-                else:
-                    frame = np.zeros((self._h, self._w, 3), dtype=np.uint8)
-                
-                with self._lock:
-                    self._frame = frame
-                self._ready.set()
-        finally:
-            if self._cam is not None:
-                try:
-                    self._cam.close()
-                except Exception:
-                    pass
-
-    def get_frame(self):
-        """Return a copy of the latest captured frame (or None if not yet ready)."""
-        with self._lock:
-            return self._frame.copy() if self._frame is not None else None
-
-    def wait_for_first_frame(self, timeout=5.0):
-        """Block the execution until the first frame is successfully captured, or timeout."""
-        return self._ready.wait(timeout=timeout)
-
-    def stop(self):
-        """Signal the thread to stop capturing and exit."""
-        self._stop.set()
-
-
-# ---------------------------------------------------------------------------
-# Sensor thread
-# ---------------------------------------------------------------------------
-
-class SensorThread(threading.Thread):
-    """
-    Polls both HC-SR04 sensors every 200 ms and stores the latest color zone readings.
-    """
-
-    def __init__(self, left_sensor: UltrasonicSensor, right_sensor: UltrasonicSensor):
-        super().__init__(daemon=True)
-        self._left   = left_sensor
-        self._right  = right_sensor
-        self._lock   = threading.Lock()
-        self._stop   = threading.Event()
-        self._left_zone  = None
-        self._right_zone = None
-
-    def run(self):
-        while not self._stop.is_set():
-            lz = self._left.read_zone()
-            rz = self._right.read_zone()
-            
-            with self._lock:
-                self._left_zone  = lz
-                self._right_zone = rz
-            time.sleep(0.2)
-
-    def get_zones(self):
-        """Return a tuple of (left_zone, right_zone) — each is a color string or None."""
-        with self._lock:
-            return self._left_zone, self._right_zone
-
-    def stop(self):
-        """Signal the sensor thread to stop reading and exit."""
-        self._stop.set()
-
-
-# ---------------------------------------------------------------------------
-# Main game core
-# ---------------------------------------------------------------------------
-
-class EmotionPuzzleGame:
-
-    def __init__(self):
-        self._cfg = CONFIG
-
-        # Hardware / detection initialization
-        self._left_sensor  = UltrasonicSensor(
-            self._cfg["left_trig"], self._cfg["left_echo"], self._cfg, hand_side='left'
-        )
-        self._right_sensor = UltrasonicSensor(
-            self._cfg["right_trig"], self._cfg["right_echo"], self._cfg, hand_side='right'
-        )
-        self._button            = Button(self._cfg["button_pin"])
-        self._emotion_detector  = EmotionDetector()
-        self._gesture_detector  = GestureDetector()
-        self._display           = LCDDisplay(self._cfg)
-        self._voice             = VoiceAnnouncer()  # Initialize the TTS engine
-
-        # Initialize background threads
-        self._cam_thread    = CameraThread(self._cfg)
-        self._sensor_thread = SensorThread(self._left_sensor, self._right_sensor)
-
-        # Game state tracking variables
-        self._state         : GameState        = GameState.INTRO
-        self._round_num     : int              = 0
-        self._records       : list             = []
-        self._current_target: RoundTarget | None = None
-        self._state_start   : float            = 0.0
-        self._last_detection: DetectionResult | None = None
-        self._last_passed   : bool             = False
-
-    # ------------------------------------------------------------------
-    # State machine helpers
-    # ------------------------------------------------------------------
-
-    def _enter(self, state: GameState):
-        """Transition to a new game state and record the starting time."""
-        self._state       = state
-        self._state_start = time.monotonic()
-
-    def _elapsed(self) -> float:
-        """Calculate how much time has passed since entering the current state."""
-        return time.monotonic() - self._state_start
-
-    def _remaining(self, duration: float) -> float:
-        """Calculate the remaining time for states that have a fixed duration."""
-        return max(0.0, duration - self._elapsed())
-
-    def _button_pressed_or_timeout(self, timeout=_SIM_PROMPT_TIMEOUT) -> bool:
-        """
-        Return True if the physical button is pressed, OR (in simulation mode)
-        if the prompt has been displayed for longer than `timeout` seconds.
-        """
-        if self._button.is_pressed():
-            return True
-        if not _PICAM_AVAILABLE and self._elapsed() >= timeout:
-            return True
-        return False
-
-    # ------------------------------------------------------------------
-    # State handlers
-    # ------------------------------------------------------------------
-
-    def _handle_intro(self):
-        """Show the title screen briefly, then transition to the ready prompt."""
-        if self._elapsed() < 0.01:
-            self._display.draw_intro()
-        time.sleep(0.1)
-        if self._elapsed() >= 2.0:
-            self._enter(GameState.READY_PROMPT)
-
-    def _handle_ready_prompt(self):
-        """Display 'Are you ready to start?' and wait for a button press."""
-        if self._elapsed() < 0.01:
-            self._round_num = 0
-            self._records   = []
-            self._display.draw_ready_prompt()
-        time.sleep(0.05)
-        
-        if self._button_pressed_or_timeout():
-            time.sleep(0.3)  # Add a slight delay for physical button debounce
-            self._enter(GameState.ROUND_START)
-
-    def _handle_round_start(self):
-        """Initialize a new round, generate a random target, and announce it via TTS."""
-        if self._elapsed() < 0.01:
-            self._round_num     += 1
-            self._current_target = random_target()
-            
-            # --- Dynamic TTS Announcer Logic ---
-            t = self._current_target
-            
-            # Replace underscores with spaces so the TTS reads gestures naturally
-            l_gest = t.left_gesture.replace("_", " ")
-            r_gest = t.right_gesture.replace("_", " ")
-            
-            # Multiple template designs to avoid repetitive robotic voice
-            templates = [
-                # Short and direct
-                f"Round {self._round_num}. Face {t.emotion}. Left hand {l_gest} at {t.left_distance}. Right hand {r_gest} at {t.right_distance}.",
-                
-                # Conversational and natural
-                f"Get ready for round {self._round_num}. Show me a {t.emotion} face. Left hand doing {l_gest} in the {t.left_distance} zone, right hand doing {r_gest} in the {t.right_distance} zone.",
-                
-                # Challenge mode style
-                f"Level {self._round_num}. Emotion is {t.emotion}. Left: {l_gest} on {t.left_distance}. Right: {r_gest} on {t.right_distance}."
-            ]
-            
-            # Randomly select a template and send it to the background voice thread
-            prompt = random.choice(templates)
-            self._voice.speak(prompt)
-            # -----------------------------------
-
-        self._display.draw_round_start(self._round_num, self._current_target)
-        time.sleep(0.05)
-
-        if self._elapsed() >= self._cfg["round_start_seconds"]:
-            self._enter(GameState.COUNTDOWN)
-
-    def _handle_countdown(self):
-        """Display a live 5-second countdown for the player to get into position."""
-        remaining = self._remaining(self._cfg["prepare_seconds"])
-        self._display.draw_countdown(self._current_target, remaining, self._round_num)
-        time.sleep(1.0 / 15) # Maintain approx 15 FPS refresh rate for the LCD
-
-        if remaining <= 0:
-            self._enter(GameState.HOLD)
-
-    def _handle_hold(self):
-        """Display the 'HOLD' screen with a progress bar for 3 seconds."""
-        remaining = self._remaining(self._cfg["hold_seconds"])
-        self._display.draw_hold(remaining, self._cfg["hold_seconds"])
-        time.sleep(1.0 / 15)
-
-        if remaining <= 0:
-            self._enter(GameState.DETECT)
-
-    def _handle_detect(self):
-        """
-        The critical snapshot moment: grab the latest camera frame and sensor zones,
-        run AI inferences, and verify against the target.
-        """
-        frame = self._cam_thread.get_frame()
-        left_zone, right_zone = self._sensor_thread.get_zones()
-
-        # Run AI detection on the captured frame
-        emotion_label, _ = self._emotion_detector.predict(frame)
-        gesture_result   = self._gesture_detector.detect(frame) if frame is not None \
-                           else {"Left": (None, 0.0), "Right": (None, 0.0)}
-
-        left_gesture,  _ = gesture_result["Left"]
-        right_gesture, _ = gesture_result["Right"]
-
-        # Compile everything into a DetectionResult object
-        detection = DetectionResult(
-            emotion        = emotion_label,
-            left_gesture   = left_gesture,
-            right_gesture  = right_gesture,
-            left_distance  = left_zone,
-            right_distance = right_zone,
-        )
-
-        # Check if the player perfectly matched the target combination
-        passed = detection.matches(self._current_target)
-        
-        self._records.append(RoundRecord(
-            round_num = self._round_num,
-            target    = self._current_target,
-            detection = detection,
-            passed    = passed,
-        ))
-
-        self._last_detection = detection
-        self._last_passed    = passed
-
-        self._enter(GameState.RESULT)
-
-    def _handle_result(self):
-        """Display PASS or FAIL and a breakdown of which conditions were met."""
-        if self._elapsed() < 0.01:
-            self._display.draw_result(
-                self._last_passed, self._current_target, self._last_detection
-            )
-        time.sleep(0.05)
-
-        # Show result for a few seconds before moving to the next round or the end screen
-        if self._elapsed() >= self._cfg["result_display_seconds"]:
-            if self._round_num < self._cfg["total_rounds"]:
-                self._enter(GameState.ROUND_START)
-            else:
-                self._enter(GameState.SHOW_SCORE_PROMPT)
-
-    def _handle_show_score_prompt(self):
-        """Display 'Game over! Press button to show score' and wait for input."""
-        if self._elapsed() < 0.01:
-            self._display.draw_show_score_prompt()
-        time.sleep(0.05)
-        
-        if self._button_pressed_or_timeout():
-            time.sleep(0.3)  # Debounce
-            self._enter(GameState.FINAL_SCORE)
-
-    def _handle_final_score(self):
-        """Display the final score out of 5, then move to the play-again prompt."""
-        if self._elapsed() < 0.01:
-            score         = compute_score(self._records)
-            round_results = [r.passed for r in self._records]
-            self._display.draw_final_score(score, round_results)
-        time.sleep(0.1)
-
-        if self._elapsed() >= self._cfg["result_display_seconds"] + 1.0:
-            self._enter(GameState.PLAY_AGAIN_PROMPT)
-
-    def _handle_play_again_prompt(self):
-        """Display 'Play again? Press button' — wait for input, then restart the game."""
-        if self._elapsed() < 0.01:
-            self._display.draw_play_again_prompt()
-        time.sleep(0.05)
-        
-        if self._button_pressed_or_timeout():
-            time.sleep(0.3)  # Debounce
-            self._enter(GameState.INTRO)
-
-    # ------------------------------------------------------------------
-    # Main execution loop
-    # ------------------------------------------------------------------
-
-    def run(self):
-        """Start background threads and initiate the game state machine."""
-        self._cam_thread.start()
-        self._sensor_thread.start()
-
-        if not self._cam_thread.wait_for_first_frame(timeout=5.0):
-            warnings.warn("[game] Camera did not produce a frame within 5s — continuing anyway.")
-
-        self._enter(GameState.INTRO)
-
-        # Map each GameState to its respective handler function
-        _handlers = {
-            GameState.INTRO             : self._handle_intro,
-            GameState.READY_PROMPT      : self._handle_ready_prompt,
-            GameState.ROUND_START       : self._handle_round_start,
-            GameState.COUNTDOWN         : self._handle_countdown,
-            GameState.HOLD              : self._handle_hold,
-            GameState.DETECT            : self._handle_detect,
-            GameState.RESULT            : self._handle_result,
-            GameState.SHOW_SCORE_PROMPT : self._handle_show_score_prompt,
-            GameState.FINAL_SCORE       : self._handle_final_score,
-            GameState.PLAY_AGAIN_PROMPT : self._handle_play_again_prompt,
-        }
-
-        # Infinite state machine loop
-        while True:
-            _handlers[self._state]()
-
-    def shutdown(self):
-        """Clean up all hardware resources and stop threads gracefully."""
-        self._cam_thread.stop()
-        self._sensor_thread.stop()
-        self._left_sensor.cleanup()
-        self._right_sensor.cleanup()
-        self._button.cleanup()
-        self._display.close()
-        self._voice.cleanup()  # Safely shutdown the TTS thread
-
-
-# ---------------------------------------------------------------------------
-# Script Entry Point
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    game = EmotionPuzzleGame()
+def speak(text):
+    print(f"[voice] {text}")
     try:
-        game.run()
-    except KeyboardInterrupt:
-        print("\n[game] Interrupted by user — shutting down safely.")
-    finally:
-        game.shutdown()
+        chunks = []
+        for chunk in piper.synthesize(text):
+            chunks.append(chunk.audio_float_array)
+        if chunks:
+            audio = np.concatenate(chunks)
+            src_rate = piper.config.sample_rate
+            if src_rate != TARGET_AUDIO_RATE:
+                target_len = int(len(audio) * TARGET_AUDIO_RATE / src_rate)
+                audio = np.interp(
+                    np.linspace(0, len(audio), target_len),
+                    np.arange(len(audio)),
+                    audio,
+                )
+            sd.play(audio, samplerate=TARGET_AUDIO_RATE, device=1)
+            sd.wait()
+    except Exception as e:
+        print(f"[voice error] {e}")
+
+# ---------------------------------------------------------------------------
+# Emotion detection
+# ---------------------------------------------------------------------------
+
+print("Loading emotion model...")
+display.draw_message("Loading model...", "Please wait")
+
+with open(CONFIG["model_config_path"]) as f:
+    _mcfg = json.load(f)
+
+_interp = tflite.Interpreter(model_path=CONFIG["emotion_model_path"])
+_interp.allocate_tensors()
+_in_idx  = _interp.get_input_details()[0]["index"]
+_out_idx = _interp.get_output_details()[0]["index"]
+
+def detect_emotion(frame_rgb):
+    img    = cv2.resize(frame_rgb, (_mcfg["img_size"], _mcfg["img_size"]))
+    tensor = np.clip(
+        np.round(img.astype(np.float32) / _mcfg["in_scale"] + _mcfg["in_zero"]),
+        0, 255,
+    ).astype(np.uint8)[np.newaxis, ...]
+
+    _interp.set_tensor(_in_idx, tensor)
+    _interp.invoke()
+
+    raw   = _interp.get_tensor(_out_idx)[0]
+    probs = (raw.astype(np.float32) - _mcfg["out_zero"]) * _mcfg["out_scale"]
+    exp   = np.exp(probs - probs.max())
+    probs = exp / exp.sum()
+
+    idx   = int(np.argmax(probs))
+    label = _mcfg["class_names"][idx]
+    conf  = float(probs[idx])
+
+    if conf < CONFIG["emotion_confidence"] or label not in EMOTION_OPTIONS:
+        return None
+    return label
+
+# ---------------------------------------------------------------------------
+# Gesture detection — stub (to be replaced by team member)
+# ---------------------------------------------------------------------------
+
+def detect_gestures(frame_rgb):
+    """Returns {"Left": gesture_or_None, "Right": gesture_or_None}."""
+    return {"Left": None, "Right": None}
+
+# ---------------------------------------------------------------------------
+# Sensor helpers
+# ---------------------------------------------------------------------------
+
+def read_left_color():
+    """Close (≤ threshold) → Pink, far → Red."""
+    cm = left_sensor.distance * 100
+    return LEFT_COLOR_OPTIONS[0] if cm <= CONFIG["dist_threshold"] else LEFT_COLOR_OPTIONS[1]
+
+def read_right_color():
+    """Close (≤ threshold) → Blue, far → Green."""
+    cm = right_sensor.distance * 100
+    return RIGHT_COLOR_OPTIONS[0] if cm <= CONFIG["dist_threshold"] else RIGHT_COLOR_OPTIONS[1]
+
+# ---------------------------------------------------------------------------
+# Game helpers
+# ---------------------------------------------------------------------------
+
+def wait_for_button():
+    """Block until the button is pressed, then debounce."""
+    while not button.is_pressed:
+        time.sleep(0.05)
+    time.sleep(0.3)
+
+def make_target():
+    return SimpleNamespace(
+        emotion       = random.choice(EMOTION_OPTIONS),
+        left_gesture  = random.choice(GESTURE_OPTIONS),
+        right_gesture = random.choice(GESTURE_OPTIONS),
+        left_color    = random.choice(LEFT_COLOR_OPTIONS),
+        right_color   = random.choice(RIGHT_COLOR_OPTIONS),
+    )
+
+def announce_target(round_num, target):
+    lg = GESTURE_SPOKEN.get(target.left_gesture,  target.left_gesture)
+    rg = GESTURE_SPOKEN.get(target.right_gesture, target.right_gesture)
+    speak(
+        f"Round {round_num}. "
+        f"Show a {target.emotion} face. "
+        f"Left hand: {lg}. "
+        f"Right hand: {rg}. "
+        f"Left color: {target.left_color}. "
+        f"Right color: {target.right_color}."
+    )
+
+# ---------------------------------------------------------------------------
+# Main game loop
+# ---------------------------------------------------------------------------
+
+print("Ready!\n")
+
+while True:
+
+    # -- INTRO --
+    display.draw_intro()
+    speak("Welcome to the Pi Puzzle Game!")
+
+    # -- READY PROMPT --
+    display.draw_ready_prompt()
+    speak("Are you ready to start? Press the button when you are.")
+    wait_for_button()
+
+    records = []
+
+    for round_num in range(1, CONFIG["total_rounds"] + 1):
+
+        # -- ROUND START --
+        target = make_target()
+        display.draw_round_start(round_num, target)
+        announce_target(round_num, target)
+
+        # -- COUNTDOWN --
+        speak(f"Get ready. You have {CONFIG['prepare_seconds']} seconds.")
+        for secs_left in range(CONFIG["prepare_seconds"], 0, -1):
+            display.draw_countdown(target, secs_left, round_num)
+            time.sleep(1.0)
+
+        # -- HOLD --
+        display.draw_hold(CONFIG["hold_seconds"], CONFIG["hold_seconds"])
+        speak("Hold still!")
+        for secs_left in range(CONFIG["hold_seconds"], 0, -1):
+            display.draw_hold(secs_left, CONFIG["hold_seconds"])
+            time.sleep(1.0)
+
+        # -- DETECT --
+        frame      = camera.capture_array()
+        emotion    = detect_emotion(frame)
+        gestures   = detect_gestures(frame)
+        left_color  = read_left_color()
+        right_color = read_right_color()
+
+        detected = SimpleNamespace(
+            emotion       = emotion,
+            left_gesture  = gestures["Left"],
+            right_gesture = gestures["Right"],
+            left_color    = left_color,
+            right_color   = right_color,
+        )
+
+        passed = (
+            detected.emotion       == target.emotion       and
+            detected.left_gesture  == target.left_gesture  and
+            detected.right_gesture == target.right_gesture and
+            detected.left_color    == target.left_color    and
+            detected.right_color   == target.right_color
+        )
+        records.append(passed)
+
+        def ok(t, d):
+            return "OK" if t == d else "FAIL"
+
+        print(f"\n--- Round {round_num} results ---")
+        print(f"  Emotion     : {detected.emotion or '?':10}  (target: {target.emotion})  {ok(target.emotion, detected.emotion)}")
+        print(f"  Left hand   : {detected.left_gesture or '?':10}  (target: {target.left_gesture})  {ok(target.left_gesture, detected.left_gesture)}")
+        print(f"  Right hand  : {detected.right_gesture or '?':10}  (target: {target.right_gesture})  {ok(target.right_gesture, detected.right_gesture)}")
+        print(f"  Left color  : {detected.left_color or '?':10}  (target: {target.left_color})  {ok(target.left_color, detected.left_color)}")
+        print(f"  Right color : {detected.right_color or '?':10}  (target: {target.right_color})  {ok(target.right_color, detected.right_color)}")
+        print(f"  --> {'PASS' if passed else 'FAIL'}\n")
+
+        # -- RESULT --
+        display.draw_result(passed, target, detected)
+        if passed:
+            speak("Nice job! You passed that round.")
+        else:
+            speak("Round failed. Better luck next time.")
+        time.sleep(CONFIG["result_display_seconds"])
+
+    # -- SHOW SCORE PROMPT --
+    display.draw_show_score_prompt()
+    speak("Game over! Press the button to see your score.")
+    wait_for_button()
+
+    # -- FINAL SCORE --
+    score = sum(records)
+    display.draw_final_score(score, records)
+    if score >= CONFIG["pass_threshold"]:
+        speak(f"You scored {score} out of {CONFIG['total_rounds']}. Congratulations, you won!")
+    else:
+        speak(f"You scored {score} out of {CONFIG['total_rounds']}. Better luck next time!")
+    time.sleep(3.0)
+
+    # -- PLAY AGAIN PROMPT --
+    display.draw_play_again_prompt()
+    speak("Press the button to play again.")
+    wait_for_button()

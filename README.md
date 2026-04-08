@@ -1,156 +1,135 @@
-# 🎮 Emotion Puzzle Game 🧩
+# Pi Puzzle Game
 
-A Raspberry Pi-powered spatial puzzle game where the player must match a randomly generated combination of facial expressions, hand gestures, and physical hand positions (color zones) — detected live using a camera and ultrasonic sensors. 
+A Raspberry Pi game where the player matches a randomly generated combination of facial expression, hand gestures, and sensor-based color zones each round. Score 2 or more out of 3 rounds to win.
 
-Say goodbye to traditional buttons, and use your body's proprioception to unlock the invisible mechanisms in thin air! 🪄
+## How to play
 
-## 🎯 How to play
+Each round shows and speaks a target combination:
 
-The game runs for **5 rounds**. Each round displays a target combination on the LCD screen, accompanied by an **AI Voice Announcement**:
+| Input | Options |
+|---|---|
+| Face | Happy, Surprise, Disgust |
+| Left hand gesture | Thumbs Up, Peace, Thumbs Down |
+| Right hand gesture | Thumbs Up, Peace, Thumbs Down |
+| Left color (distance) | Pink (close ≤ 20 cm) / Red (far > 20 cm) |
+| Right color (distance) | Blue (close ≤ 20 cm) / Green (far > 20 cm) |
 
-* 📸 **Face** — Happy, Surprise, or Disgust
-* 🤚 **Left hand gesture** — Thumbs Up, Peace, or Thumbs Down
-* ✋ **Right hand gesture** — Thumbs Up, Peace, or Thumbs Down
-* 🌸 **Left hand zone** — Pink (15–25 cm) or Red (35–45 cm)
-* 🌊 **Right hand zone** — Blue (15–25 cm) or Green (35–45 cm)
-
-⏳ You have **5 seconds** to get into position, then must **HOLD for 3 seconds**. A snapshot is taken at the end of the hold. 
-🏆 **Score ≥ 3/5 = WIN.**
+You have **5 seconds** to get into position, then **hold for 3 seconds**. A snapshot is taken at the end of the hold. Score ≥ 2/3 = WIN.
 
 ---
 
-## 🛠️ Hardware
+## Hardware
 
 | Component | Details |
 |---|---|
-| **Board** 🍓 | Raspberry Pi 4 or 5 |
-| **Camera** 📷 | Pi Camera Module (`picamzero`) |
-| **Display** 📺 | 16×2 I2C LCD (`lcd_i2c`, default address `0x27`) |
-| **Left Sensor** 📏 | HC-SR04 — TRIG=GPIO16, ECHO=GPIO20 (BCM) |
-| **Right Sensor** 📏 | HC-SR04 — TRIG=GPIO23, ECHO=GPIO24 (BCM) |
+| Board | Raspberry Pi 4 or 5 |
+| Camera | Pi Camera Module (picamzero) |
+| Display | 16×2 I2C LCD (`lcd_i2c`, address `39` / 0x27) |
+| Left ultrasonic | HC-SR04 — TRIG=GPIO16, ECHO=GPIO20 |
+| Right ultrasonic | HC-SR04 — TRIG=GPIO23, ECHO=GPIO24 |
+| Button | Momentary push button — GPIO21 |
+| Speaker | USB audio device (device index 1, 48000 Hz) |
 
-### 🔌 Wiring Guide
+### Wiring
 
-**1. HC-SR04 Ultrasonic Sensors (×2)**
-
-```text
-[Left Sensor - Pink/Red Zone]
-VCC        → 5V (Pin 2 or 4)
-GND        → GND
-TRIG       → GPIO 16 (Pin 36)
-ECHO       → GPIO 20 (Pin 38)  ⚠️ [Use 1kΩ + 2kΩ voltage divider!]
-
-[Right Sensor - Blue/Green Zone]
-VCC        → 5V (Pin 2 or 4)
-GND        → GND
-TRIG       → GPIO 23 (Pin 16)
-ECHO       → GPIO 24 (Pin 18)  ⚠️ [Use 1kΩ + 2kΩ voltage divider!]
+**HC-SR04 ultrasonic sensors (×2)**
 ```
-> ⚠️ **CRITICAL:** The HC-SR04 ECHO pin outputs 5V. You **MUST** use a voltage divider to bring it down to 3.3V before connecting it to the Pi GPIO to prevent hardware damage.
-
-**2. Start Button**
-```text
-One leg    → GPIO 21 (Pin 40)
-Other leg  → GND
+Sensor Pin → Pi Pin
+VCC        → 5V
+GND        → GND
+TRIG       → GPIO16 (Pin 36)  ← left sensor
+ECHO       → GPIO20 (Pin 38)  ← left sensor  [voltage divider: 1kΩ + 2kΩ]
+TRIG       → GPIO23 (Pin 16)  ← right sensor
+ECHO       → GPIO24 (Pin 18)  ← right sensor [voltage divider: 1kΩ + 2kΩ]
 ```
-*(The button uses the Pi's internal pull-up resistor — no external resistor needed. Press = LOW signal.)*
+> ⚠️ HC-SR04 ECHO outputs 5 V — use a voltage divider before connecting to the Pi.
 
-**3. 16×2 I2C LCD**
-```text
+**16×2 I2C LCD**
+```
+LCD Pin → Pi Pin
 VCC     → 5V
 GND     → GND
-SDA     → GPIO 2 / SDA (Pin 3)
-SCL     → GPIO 3 / SCL (Pin 5)
+SDA     → GPIO2 / SDA (Pin 3)
+SCL     → GPIO3 / SCL (Pin 5)
 ```
-*(If the LCD doesn't show anything, try changing the I2C address to `0x3F` in `config.py`)*
+
+**Button**
+```
+One leg → GPIO21 (Pin 40)
+Other   → GND
+```
+Uses internal pull-up — no external resistor needed.
 
 ---
 
-## 📂 Project Structure
+## Project structure
 
-```text
+```
 final_pi_puzzle/
-├── 🎮 game.py          # Entry point — main game loop & state machine
-├── 👁️ detector.py      # EmotionDetector & GestureDetector logic
-├── 📡 sensor.py        # UltrasonicSensor class mapped to color zones
-├── 📺 display.py       # LCDDisplay class (16×2 I2C)
-├── 🗣️ voice.py         # Background threaded Text-to-Speech announcer
-├── 🧠 game_logic.py    # RoundTarget, DetectionResult, scoring, state enum
-├── ⚙️ config.py        # All configuration constants & UI color hex codes
-├── 📁 models/
-│   ├── emotionnet_int8.tflite   # INT8 quantized EfficientNetB0
-│   └── emotion_model_config.json # img_size, class_names, quant params
-└── 📄 requirements.txt
+├── game.py        # Main game loop (entry point)
+├── display.py     # LCDDisplay class
+├── config.py      # All configuration and game options
+├── models/
+│   ├── emotionnet_int8.tflite
+│   ├── emotion_model_config.json
+│   ├── en_US-libritts-high.onnx
+│   └── en_US-libritts-high.onnx.json
+├── tests/
+│   ├── test_button.py    # Verify button wiring
+│   ├── test_lcd.py       # Verify LCD display
+│   ├── test_sensors.py   # Verify both ultrasonic sensors
+│   ├── test_camera.py    # Verify camera + emotion model
+│   └── test_speaker.py   # Verify Piper TTS + speaker
+└── README.md
 ```
 
 ---
 
-## 🚀 Setup & Installation
+## Setup
 
-### 1. Install dependencies
-
-**On the Raspberry Pi (Linux):**
-The AI Voice Announcer (`pyttsx3`) requires the `espeak` engine to be installed on the system level first.
+### 1. Enable I2C on the Pi
 ```bash
-sudo apt-get update
-sudo apt-get install espeak
-pip install -r requirements.txt
+sudo raspi-config   # Interface Options → I2C → Enable
+i2cdetect -y 1      # Confirm LCD shows up at address 0x27 (= 39)
 ```
 
-**On a Dev Machine (Windows/Mac for simulation):**
+### 2. Install dependencies
 ```bash
-pip install tflite-runtime numpy opencv-python mediapipe pyttsx3
-# lcd_i2c, RPi.GPIO, picamzero are Pi-only — skip them for local testing
+pip install picamzero gpiozero lcd_i2c piper-tts sounddevice numpy opencv-python tflite-runtime
 ```
 
-### 2. Add the ML model files
+### 3. Test each component
+Run these from the `final_pi_puzzle/` directory before starting the full game:
+```bash
+python tests/test_button.py     # press button → "Button pressed!" prints
+python tests/test_lcd.py        # messages appear on LCD
+python tests/test_sensors.py    # distances update as you move your hands
+python tests/test_camera.py     # emotion label prints for each snapshot
+python tests/test_speaker.py    # three phrases spoken through the speaker
+```
 
-Ensure your trained model files are correctly placed in the `models/` directory:
-* `models/emotionnet_int8.tflite`
-* `models/emotion_model_config.json`
-
-### 3. Run the Game
-
+### 4. Run the game
 ```bash
 python game.py
 ```
 
 ---
 
-## 💻 Simulation Mode (Dev Machine Friendly)
+## Configuration
 
-The game detects missing hardware at startup and falls back gracefully so you can test the logic on your laptop:
+All tunable values are in `config.py`:
 
-| Missing Hardware | Fallback Behavior 🛡️ |
-|---|---|
-| `picamzero` | Generates blank black frames (camera thread still runs smoothly). |
-| `RPi.GPIO` | Simulates distance data, randomly outputting Pink/Red/Blue/Green. |
-| `lcd_i2c` | Prints formatted LCD ASCII UI directly to the terminal console. |
-
----
-
-## ⚙️ Configuration (`config.py`)
-
-All tunable values and game aesthetics live in `config.py`. Key settings include:
-* **Game Flow:** Tweak `prepare_seconds`, `hold_seconds`, and `pass_threshold`. Note that `round_start_seconds` is set to 5s to allow the Text-to-Speech engine enough time to read the instructions.
-* **Zone Thresholds:** Adjust the physical cm distance for near/far zones directly in `sensor.py` (Default: Near=15-25cm, Far=35-45cm).
-* **UI Theme:** `UI_THEME_HEX` contains the low-saturation, retro-style hex codes corresponding to the physical zones (Dusty Pink, Retro Red, Slate Blue, Sage Green) for future dashboard expansions.
+| Key | Default | Description |
+|---|---|---|
+| `dist_threshold` | `20` cm | Below = Pink/Blue, above = Red/Green |
+| `prepare_seconds` | `5` | Countdown duration per round |
+| `hold_seconds` | `3` | Hold duration before snapshot |
+| `total_rounds` | `3` | Rounds per game |
+| `pass_threshold` | `2` | Minimum rounds correct to win |
+| `emotion_confidence` | `0.20` | Min confidence for emotion prediction |
 
 ---
 
-## 👩‍💻 For the Gesture Detection Team Member (Diya)
+## Gesture detection
 
-Implement the `GestureDetector` stub inside `detector.py`. The system is already fully wired into the main loop — you only need to fill in the MediaPipe logic:
-
-1.  `__init__`: initialize `mediapipe.solutions.hands.Hands`
-2.  `_is_finger_extended(landmarks, tip_idx, pip_idx)`
-3.  `_is_thumb_extended(landmarks, handedness, threshold)`
-4.  `_classify_landmarks(landmarks, handedness)` → `(gesture_str, confidence)`
-5.  `detect(frame_rgb)` → `{"Left": (gesture, conf), "Right": (gesture, conf)}`
-
-*Input frames are RGB numpy arrays (`picamzero` format) — no color conversion needed before passing to MediaPipe.*
-
-**Gesture Rules:**
-* 👍 `thumbs_up` — thumb extended, all other fingers curled
-* 👎 `thumbs_down` — thumb extended downward (`tip.y > ip.y`), all others curled
-* ✌️ `peace` — index + middle extended, thumb + ring + pinky curled
+`detect_gestures()` in `game.py` is currently a stub — it always returns `None` for both hands. Replace it with the real MediaPipe implementation when ready. The rest of the game will work without any other changes.
