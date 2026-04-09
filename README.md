@@ -16,6 +16,8 @@ Each round shows and speaks a target combination:
 
 You have **5 seconds** to get into position, then **hold for 3 seconds**. A snapshot is taken at the end of the hold. Score ≥ 2/3 = WIN.
 
+After each round an LLM gives a short spoken reaction based on what you got right or wrong.
+
 ---
 
 ## Hardware
@@ -66,9 +68,10 @@ Uses internal pull-up — no external resistor needed.
 
 ```
 final_pi_puzzle/
-├── game.py        # Main game loop (entry point)
-├── display.py     # LCDDisplay class
-├── config.py      # All configuration and game options
+├── robust_game.py   # Main game loop with LLM feedback and gesture detection
+├── game.py          # Simple initial game runner (no gesture detection or LLM)
+├── display.py       # LCDDisplay class
+├── config.py        # All configuration and game options
 ├── models/
 │   ├── emotionnet_int8.tflite
 │   ├── emotion_model_config.json
@@ -95,19 +98,31 @@ i2cdetect -y 1      # Confirm LCD shows up at address 0x27 (= 39)
 
 ### 2. Install dependencies
 ```bash
-pip install picamzero gpiozero lcd_i2c piper-tts sounddevice numpy opencv-python tflite-runtime
-```
-#### Models
-Download voice and emotion models before running:
-```bash
-wget -O models/en_US-lessac-medium.onnx \
-  'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx?download=true'
-wget -O models/en_US-lessac-medium.onnx.json \
-  'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json?download=true'
-# Copy your emotionnet_int8.tflite into models/
+pip install picamzero gpiozero lcd_i2c piper-tts sounddevice numpy opencv-python tflite-runtime mediapipe requests
 ```
 
-### 3. Test each component
+#### Models
+Download voice model before running:
+```bash
+wget -O models/en_US-libritts-high.onnx \
+  'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts/high/en_US-libritts-high.onnx?download=true'
+wget -O models/en_US-libritts-high.onnx.json \
+  'https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts/high/en_US-libritts-high.onnx.json?download=true'
+# Copy your emotionnet_int8.tflite and emotion_model_config.json into models/
+```
+
+### 3. Set the LiteLLM API token
+```bash
+export LITELLM_TOKEN="your_token_here"
+```
+
+To persist across sessions:
+```bash
+echo 'export LITELLM_TOKEN="your_token_here"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 4. Test each component
 Run these from the `final_pi_puzzle/` directory before starting the full game:
 ```bash
 python tests/test_button.py     # press button → "Button pressed!" prints
@@ -117,9 +132,10 @@ python tests/test_camera.py     # emotion label prints for each snapshot
 python tests/test_speaker.py    # three phrases spoken through the speaker
 ```
 
-### 4. Run the game
+### 5. Run the game
 ```bash
-python game.py
+python robust_game.py   # full game with gesture detection + LLM feedback
+python game.py          # simple version without gesture detection or LLM
 ```
 
 ---
@@ -136,9 +152,3 @@ All tunable values are in `config.py`:
 | `total_rounds` | `3` | Rounds per game |
 | `pass_threshold` | `2` | Minimum rounds correct to win |
 | `emotion_confidence` | `0.20` | Min confidence for emotion prediction |
-
----
-
-## Gesture detection
-
-`detect_gestures()` in `game.py` is currently a stub — it always returns `None` for both hands. Replace it with the real MediaPipe implementation when ready. The rest of the game will work without any other changes.
