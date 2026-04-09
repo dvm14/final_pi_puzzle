@@ -15,6 +15,7 @@ import sounddevice as sd
 from picamzero import Camera
 from gpiozero import DistanceSensor, Button
 from piper import PiperVoice
+import mediapipe as mp
 
 try:
     import tflite_runtime.interpreter as tflite
@@ -117,11 +118,8 @@ def detect_emotion(frame_rgb):
     return label
 
 # ---------------------------------------------------------------------------
-# Gesture detection — stub (to be replaced by team member)
+# Gesture detection
 # ---------------------------------------------------------------------------
-
-import mediapipe as mp
-
 
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
