@@ -37,7 +37,7 @@ class LCDDisplay:
         self._lcd.write_text(_pad(line1, self._cols))
 
     def draw_intro(self):
-        self._write("Pi Puzzle", "Key to start...")
+        self._write("Welcome to", "Pi Puzzle!")
 
     def draw_ready_prompt(self):
         self._write("Are you ready?", "Press button...")

@@ -272,8 +272,8 @@ while True:
 
         detected = SimpleNamespace(
             emotion       = emotion,
-            left_gesture  = target.left_gesture, #auto-pass
-            right_gesture = target.right_gesture, #auto-pass
+            left_gesture  = gestures["Left"],
+            right_gesture = gestures["Right"],
             left_color    = left_color,
             right_color   = right_color,
         )
