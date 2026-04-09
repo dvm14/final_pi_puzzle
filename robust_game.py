@@ -33,6 +33,17 @@ GESTURE_SPOKEN = {
     "thumbs_down" : "thumbs down",
 }
 
+import os
+import requests
+
+
+# Add the Duke LiteLLM Endpoint
+DUKE_CHAT_URL = "https://litellm.oit.duke.edu/chat/completions"
+
+# Insert your LLM model of choice
+DEFAULT_MODEL = "gpt-5-mini"
+DEFAULT_TIMEOUT_SEC = 30
+
 # ---------------------------------------------------------------------------
 # Hardware init
 # ---------------------------------------------------------------------------
@@ -223,6 +234,74 @@ def announce_target(round_num, target):
         f"Left color: {target.left_color}. "
         f"Right color: {target.right_color}."
     )
+# ---------------------------------------------------------------------------
+# LLM agent
+# ---------------------------------------------------------------------------
+def get_token():
+    """
+    Read LITELLM_TOKEN from environment. Raise a clear error if missing.
+    """
+    token = os.getenv("LITELLM_TOKEN", "").strip()
+    if token == "":
+        raise RuntimeError("Missing LITELLM_TOKEN environment variable.")
+    return token
+
+
+def ask_llm(prompt, model=DEFAULT_MODEL):
+    """
+    Send ONE prompt to Duke's LiteLLM gateway and return the reply text (a string).
+    """
+    token = get_token()
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/json",
+        "x-litellm-api-key": token,
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": str(prompt)}],
+    }
+    resp = requests.post(DUKE_CHAT_URL, headers=headers, json=payload, timeout=DEFAULT_TIMEOUT_SEC)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Request failed with status {resp.status_code}: {resp.text}")
+    data = resp.json()
+    reply = data["choices"][0]["message"]["content"]
+    return reply.strip()
+
+def llm_prompt(passed, target, detected):
+    """
+    Build a prompt that asks the LLM for a short spoken reaction to the round result.
+    """
+    def fmt_gesture(g):
+        return g.replace("_", " ") if g else "nothing"
+
+    target_str = (
+        f"emotion={target.emotion}, "
+        f"left gesture={fmt_gesture(target.left_gesture)}, "
+        f"right gesture={fmt_gesture(target.right_gesture)}, "
+        f"left color={target.left_color}, "
+        f"right color={target.right_color}"
+    )
+    detected_str = (
+        f"emotion={detected.emotion or 'none detected'}, "
+        f"left gesture={fmt_gesture(detected.left_gesture)}, "
+        f"right gesture={fmt_gesture(detected.right_gesture)}, "
+        f"left color={detected.left_color}, "
+        f"right color={detected.right_color}"
+    )
+    outcome = "passed" if passed else "failed"
+
+    return (
+        f"You are the host of a fun physical puzzle game. "
+        f"A player just {outcome} a round. "
+        f"The target was: {target_str}. "
+        f"What the camera and sensors detected was: {detected_str}. "
+        f"Give a short, fun, spoken reaction (1-2 sentences) — "
+        f"encouraging if they passed, playfully teasing if they failed. "
+        f"Be specific about what they got right or wrong. "
+        f"Keep it under 30 words and sound natural when spoken aloud."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Main game loop
@@ -325,10 +404,13 @@ while True:
 
         # -- RESULT --
         display.draw_result(passed, target, detected)
+        speak(ask_llm(llm_prompt(passed, target, detected)))
+        """
         if passed:
             speak("Nice job! You passed that round.")
         else:
             speak("Round failed. Better luck next time.")
+        """
         time.sleep(CONFIG["result_display_seconds"])
 
     # -- SHOW SCORE PROMPT --
