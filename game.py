@@ -120,9 +120,66 @@ def detect_emotion(frame_rgb):
 # Gesture detection — stub (to be replaced by team member)
 # ---------------------------------------------------------------------------
 
+import mediapipe as mp
+
+
+mp_hands = mp.solutions.hands
+mp_draw = mp.solutions.drawing_utils
+# Initialize MediaPipe Hands model globally (persistent object)
+_mp_hands_detector = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
+def _is_finger_up(hand_landmarks, finger_tip, finger_pip):
+    return hand_landmarks.landmark[finger_tip].y < hand_landmarks.landmark[finger_pip].y
+
+def _detect_gesture(hand_landmarks):
+    # Finger indices
+    THUMB_TIP = 4
+    THUMB_IP = 3
+    INDEX_TIP = 8
+    INDEX_PIP = 6
+    MIDDLE_TIP = 12
+    MIDDLE_PIP = 10
+    RING_TIP = 16
+    RING_PIP = 14
+    PINKY_TIP = 20
+    PINKY_PIP = 18
+
+    thumb_up = _is_finger_up(hand_landmarks, THUMB_TIP, THUMB_IP)
+    index_up = _is_finger_up(hand_landmarks, INDEX_TIP, INDEX_PIP)
+    middle_up = _is_finger_up(hand_landmarks, MIDDLE_TIP, MIDDLE_PIP)
+    ring_up = _is_finger_up(hand_landmarks, RING_TIP, RING_PIP)
+    pinky_up = _is_finger_up(hand_landmarks, PINKY_TIP, PINKY_PIP)
+
+    # 👍 Thumbs up
+    if thumb_up and not (index_up or middle_up or ring_up or pinky_up):
+        return "thumbs_up"
+    # ✌️ Peace
+    if index_up and middle_up and not (ring_up or pinky_up or thumb_up):
+        return "peace"
+    # 👎 Thumbs down: thumb tip is below thumb IP, others down
+    thumb_down = hand_landmarks.landmark[THUMB_TIP].y > hand_landmarks.landmark[THUMB_IP].y
+    if thumb_down and not (index_up or middle_up or ring_up or pinky_up):
+        return "thumbs_down"
+    return "unknown"
+
 def detect_gestures(frame_rgb):
-    """Returns {"Left": gesture_or_None, "Right": gesture_or_None}."""
-    return {"Left": None, "Right": None}
+    """
+    Returns {"Left": gesture_or_None, "Right": gesture_or_None}.
+    Uses MediaPipe to detect hand gestures for both hands, robust to only one hand present.
+    """
+    results = {"Left": None, "Right": None}
+    # Use the persistent MediaPipe Hands object
+    output = _mp_hands_detector.process(frame_rgb)
+    if output.multi_hand_landmarks and output.multi_handedness:
+        for hand_landmarks, handedness in zip(output.multi_hand_landmarks, output.multi_handedness):
+            label = handedness.classification[0].label  # 'Left' or 'Right'
+            gesture = _detect_gesture(hand_landmarks)
+            # Only accept known gestures
+            if gesture in ("thumbs_up", "peace", "thumbs_down"):
+                results[label] = gesture
+            else:
+                results[label] = None
+    return results
 
 # ---------------------------------------------------------------------------
 # Sensor helpers
