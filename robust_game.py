@@ -272,12 +272,16 @@ while True:
         from collections import Counter
         left_gesture_votes = []
         right_gesture_votes = []
+        emotion_votes = []
         for f in gesture_frames:
             gestures = detect_gestures(f)
             if gestures.get("Left"):
                 left_gesture_votes.append(gestures["Left"])
             if gestures.get("Right"):
                 right_gesture_votes.append(gestures["Right"])
+            emotions = detect_emotion(f)
+            if emotions:
+                emotion_votes.append(emotions)
 
         def most_frequent(votes):
             if not votes:
@@ -286,9 +290,8 @@ while True:
 
         left_gesture = most_frequent(left_gesture_votes)
         right_gesture = most_frequent(right_gesture_votes)
+        emotion = most_frequent(emotion_votes)
 
-        frame = gesture_frames[-1]
-        emotion = detect_emotion(frame)
         left_color  = read_left_color()
         right_color = read_right_color()
 
